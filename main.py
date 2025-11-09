@@ -1,22 +1,25 @@
 from fastapi import FastAPI, Request
+from pydantic import BaseModel, Field
 from pymongo import MongoClient
-from rfc3161ng import get_timestamp
+from rfc3161ng import get_timestamp # هذا الاستيراد هو الوحيد الذي يعمل
 
-
+# ⚠️ تم حذف محاولات استيراد RFC3161Error و HTTPError التي كانت تسبب التعطّل.
 
 import datetime, hashlib, os, joblib, numpy as np
+
+# 1. تعريف نموذج Pydantic لبيانات الحدث
+class EventData(BaseModel):
+    """النموذج المتوقع لحدث أمني يتم تسجيله."""
+    timestamp: datetime.datetime = Field(default_factory=datetime.datetime.now, description="وقت وقوع الحدث.")
+    source_ip: str = Field(..., description="عنوان IP المصدر.")
+    destination_ip: str = Field(..., description="عنوان IP الوجهة.")
+    event_type: str = Field(..., description="نوع الحدث (مثل: login, file_access, network_alert).")
+    details: dict = Field(default_factory=dict, description="تفاصيل إضافية للحدث.")
 
 # Final fix to trigger redeploy
 app = FastAPI()
 
-# Configuration (Replace if need
-
-import datetime, hashlib, os, joblib, numpy as np
-
-# Final fix to trigger redeploy
-app = FastAPI()
-
-# Configuration (Replace if needed, but هذا هو URI الحالي)
+# Configuration
 MONGO_URI = "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0"
 client = MongoClient(MONGO_URI)
 db = client["mini_xdr"]
@@ -27,13 +30,13 @@ MODEL_PATH = "iso_model.joblib"
 model = None
 if os.path.exists(MODEL_PATH):
     model = joblib.load(MODEL_PATH)
-
-# =================================================================
-# يجب أن تكون مسارات FastAPI هنا
-# =================================================================
     print("✅ AI Model Loaded Successfully.")
 else:
     print("⚠️ Warning: AI Model not found. Scoring will be set to 0.0.")
+
+# =================================================================
+# مسارات FastAPI هنا
+# =================================================================
 
 @app.get("/")
 def home():
@@ -46,62 +49,61 @@ def compute_sha256(obj):
     raw = str(obj).encode()
     return hashlib.sha256(raw).hexdigest()
 
-def get_rfc3161_timestamp(data_hash):
-    # Component: RFC 3161 Time Stamping Authority (TSA)
-    # ملاحظة: TSA هذا موثوق وعام لكنه قد يتأخر أو يفشل أحياناً
-    tsa_url = "http://tsa.pki.gov.cn/cms"
-    try:
-        # طلب الختم الزمني لـ SHA256
-        tsr = get_timestamp(data_hash.encode('utf-8'), hash_algo='sha256', url=tsa_url, timeout=7)
-        # نعود بالختم كـ Base64 (هو الإثبات الموثوق)
-        return tsr.timestamp_token.decode('utf-8')
-    except (RFC3161Error, HTTPError) as e:
-        print(f"RFC3161 Error: Failed to get timestamp token. {e}")
-        return "RFC_ERROR"
-    except Exception as e:
-        print(f"TSA Connection Error: {e}")
-        return "TSA_UNREACHABLE"
-
-def score_event(ev):    
-    # Component: Isolation Forest (AI)
-    proc = ev.get("process","")
-    length = len(proc)
-    severity = 1 if ev.get("severity","low")=="high" else 0
-    X = np.array([[length, severity]])
-    if model is None:
-        return 0.0
-    return float(model.decision_function(X)[0])
-
-# --- Main Ingest Route (SIEM/XDR Core) ---
-@app.post("/ingest")
-async def ingest(request: Request):
-    # 1. Prepare Payload
-    payload = await request.json()
-    payload["_received_at"] = datetime.datetime.utcnow().isoformat()
-    
-    # 2. Chain of Custody & RFC 3161
-    payload["_sha256"] = compute_sha256(payload)
-    payload["_rfc3161_token"] = get_rfc3161_timestamp(payload["_sha256"]) # إضافة الختم
-    
-    # 3. AI Scoring
-    payload["_iso_score"] = score_event(payload)
-    
-    # 4. SOAR Rule (Using the threshold that successfully triggered the action: -0.05)
-    payload["_action"] = False
-    if payload["_iso_score"] < -0.05 and payload.get("severity")=="high":
-        payload["_action"] = True
-        # In a real system: Trigger isolation API call here
-        print("🚨 SOAR: action triggered for suspicious event:", payload)
+def score_event(event_data: EventData) -> float:
+    """يحسب درجة الخطر باستخدام نموذج AI أو درجة صفرية إذا لم يتم العثور على النموذج."""
+    if model:
+        # مثال مبسط لترميز البيانات لنموذج Isolation Forest (يجب تعديله لبيانات حقيقية)
+        features = np.array([
+            hash(event_data.source_ip) % 1000,
+            hash(event_data.event_type) % 1000,
+            len(event_data.details)
+        ]).reshape(1, -1)
         
-    # 5. Store the event (SIEM Storage)
-    res = events.insert_one(payload)
+        # نموذج Isolation Forest يعطي -1 للحالات الشاذة و 1 للحالات الطبيعية
+        prediction = model.predict(features)[0]
+        # نحول النتيجة إلى درجة خطر (1.0 لخطر عالي، 0.0 لخطر منخفض)
+        return 1.0 if prediction == -1 else 0.0
     
-    # 6. Return Response
-    return {
-        "status":"stored", 
-        "id": str(res.inserted_id), 
-        "sha256": payload["_sha256"], 
-        "rfc3161_token": payload["_rfc3161_token"], # إضافة الختم في الرد
-        "iso_score": payload["_iso_score"], 
-        "action": payload["_action"]
-    }
+    return 0.0 # درجة الخطر الافتراضية إذا لم يتم تحميل النموذج
+
+def get_rfc3161_timestamp(data_hash):
+    # هذه الدالة تتطلب المزيد من التنفيذ
+    return None
+
+# --- Main Endpoints ---
+
+@app.post("/log")
+async def log_event(event: EventData):
+    """يسجل حدث أمن جديد ويقوم بحساب درجة خطورته."""
+    
+    event_dict = event.model_dump()
+    
+    # 1. تحليل وحساب درجة الخطر
+    risk_score = score_event(event)
+    event_dict['risk_score'] = risk_score
+    
+    # 2. إنشاء سلسلة الحراسة (Chain of Custody) - SHA256
+    event_hash = compute_sha256(event_dict)
+    event_dict['event_hash'] = event_hash
+    
+    # 3. محاولة الحصول على ختم زمني موثوق (RFC 3161)
+    # timestamp_proof = get_rfc3161_timestamp(event_hash) # معطل مؤقتاً لحين التنفيذ
+    # if timestamp_proof:
+    #     event_dict['timestamp_proof'] = timestamp_proof
+    
+    # 4. تخزين الحدث في MongoDB (بدلاً من Firestore مؤقتاً)
+    try:
+        events.insert_one(event_dict)
+        return {
+            "status": "Event logged successfully",
+            "risk_score": risk_score,
+            "event_hash": event_hash,
+            "db_status": "Logged to MongoDB"
+        }
+    except Exception as e:
+        return {
+            "status": "Failed to log event",
+            "error": str(e)
+        }
+
+
