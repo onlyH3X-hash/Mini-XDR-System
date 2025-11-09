@@ -8,15 +8,19 @@ import datetime, hashlib, os, joblib, numpy as np
 from typing import List, Any
 from bson import ObjectId # لإدارة كائنات MongoDB ID
 
-# نموذج لتمثيل الحدث المخزن (يتضمن _id)
-class EventRecord(BaseModel):
-    """النموذج الكامل للحدث كما هو مخزن في قاعدة البيانات."""
-    id: str = Field(alias="_id", default_factory=lambda: str(ObjectId()), description="معرف MongoDB الفريد للحدث.")
-    timestamp: datetime.datetime = Field(default_factory=datetime.datetime.now, description="وقت وقوع الحدث.")
+# 1. تعريف نموذج الإدخال (Input Model)
+class EventDataInput(BaseModel):
+    """النموذج المتوقع لحدث أمني يتم إرساله من المصدر."""
     source_ip: str = Field(..., description="عنوان IP المصدر.")
     destination_ip: str = Field(..., description="عنوان IP الوجهة.")
     event_type: str = Field(..., description="نوع الحدث (مثل: login, file_access, network_alert).")
     details: dict = Field(default_factory=dict, description="تفاصيل إضافية للحدث.")
+
+# 2. تعريف نموذج الإخراج والتخزين (Storage/Output Model)
+class EventRecord(EventDataInput):
+    """النموذج الكامل للحدث كما هو مخزن في قاعدة البيانات (الإخراج)."""
+    id: str = Field(alias="_id", default_factory=lambda: str(ObjectId()), description="معرف MongoDB الفريد للحدث.")
+    timestamp: datetime.datetime = Field(default_factory=datetime.datetime.now, description="وقت وقوع الحدث.")
     risk_score: float = Field(default=0.0, description="درجة الخطر المحسوبة بواسطة الذكاء الاصطناعي (0.0 - 1.0).")
     event_hash: str = Field(..., description="تجزئة SHA256 للحدث لضمان سلسلة الحراسة.")
 
@@ -74,10 +78,10 @@ def compute_sha256(obj):
     raw = str(obj).encode()
     return hashlib.sha256(raw).hexdigest()
 
-def score_event(event_data: EventRecord, model) -> float:
+def score_event(event_data: EventDataInput, model) -> float:
     """يحسب درجة الخطر باستخدام نموذج AI."""
+    # ملاحظة: تم تحديث نوع البيانات المتوقع إلى EventDataInput
     if model is not None:
-        # تم تعديل هذا الجزء ليتوقع ميزتين فقط!
         features = np.array([
             hash(event_data.source_ip) % 1000,
             hash(event_data.event_type) % 1000
@@ -98,7 +102,6 @@ async def list_events():
     try:
         events_list = []
         for event in app.events_collection.find():
-            # تحويل ObjectId إلى str ليتمكن Pydantic من التعامل معه
             event['_id'] = str(event['_id'])
             events_list.append(event)
         
@@ -111,13 +114,15 @@ async def list_events():
 
 
 @app.post("/log", response_model=EventRecord, summary="تسجيل حدث أمني جديد وتحليل الخطر")
-async def log_event(event: EventRecord):
+async def log_event(event_input: EventDataInput): # <--- استخدام نموذج الإدخال الجديد
     """يسجل حدث أمن جديد ويقوم بحساب درجة خطورته."""
     
-    event_dict = event.model_dump(by_alias=True, exclude={'id', 'risk_score', 'event_hash'})
+    # تحويل نموذج الإدخال إلى قاموس وتحديد الوقت
+    event_dict = event_input.model_dump()
+    event_dict['timestamp'] = datetime.datetime.now()
     
     # 1. تحليل وحساب درجة الخطر
-    risk_score = score_event(event, app.model)
+    risk_score = score_event(event_input, app.model)
     event_dict['risk_score'] = risk_score
     
     # 2. إنشاء سلسلة الحراسة (Chain of Custody) - SHA256
@@ -128,11 +133,12 @@ async def log_event(event: EventRecord):
     try:
         result = app.events_collection.insert_one(event_dict)
         
-        # إرجاع كائن مطابق لـ EventRecord
-        return {
-            "_id": str(result.inserted_id),
+        # 4. إرجاع الاستجابة بناءً على نموذج EventRecord
+        return EventRecord(
+            _id=str(result.inserted_id),
             **event_dict
-        }
+        )
+
     except Exception as e:
         raise HTTPException(
             status_code=400, 
