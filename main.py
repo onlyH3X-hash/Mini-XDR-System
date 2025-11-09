@@ -1,14 +1,20 @@
 from fastapi import FastAPI, Request
-from pymongo import MongoClient
-from rfc3161ng import get_timestamp
-# استيراد RFC3161Error و HTTPError بمرونة للتعامل مع اختلافات بيئات التشغيل
-try:
-    from rfc3161ng.errors import RFC3161Error, HTTPError
-except ImportError:
-    from rfc3161ng import RFC3161Error, HTTPError
-import datetime, hashlib, os, joblib, numpy as np
-# Final fix to trigger redeploy
-app = FastAPI()
+    from pymongo import MongoClient
+    from rfc3161ng import get_timestamp         # هذا الاستيراد ناجح
+    
+    # محاولة استيراد الأخطاء، هذا هو التغيير الجديد:
+    try:
+        from rfc3161ng.errors import RFC3161Error, HTTPError
+    except ImportError:
+        try:
+            from rfc3161ng.exceptions import RFC3161Error, HTTPError # محاولة المكان الثالث
+        except ImportError:
+            from rfc3161ng import RFC3161Error, HTTPError # المحاولة الأصلية
+    
+    import datetime, hashlib, os, joblib, numpy as np
+    
+    # Final fix to trigger redeploy
+    app = FastAPI()
 
 # Configuration (Replace if needed, but this is the correct URI)
 MONGO_URI = "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0"
