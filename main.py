@@ -58,7 +58,6 @@ def score_event(event_data: EventData) -> float:
         features = np.array([
             hash(event_data.source_ip) % 1000,
             hash(event_data.event_type) % 1000,
-            len(event_data.details)
         ]).reshape(1, -1)
         
         # نموذج Isolation Forest يعطي -1 للحالات الشاذة و 1 للحالات الطبيعية
