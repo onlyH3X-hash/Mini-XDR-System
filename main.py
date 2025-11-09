@@ -2,14 +2,14 @@ from fastapi import FastAPI, Request
 from pymongo import MongoClient
 from rfc3161ng import get_timestamp
 
-# محاولة استيراد الأخطاء بمرونة: نحاول errors، ثم exceptions، ثم المستوى الأعلى.
-try:
-    from rfc3161ng.errors import RFC3161Error, HTTPError
-except ImportError:
-    try:
-        from rfc3161ng.exceptions import RFC3161Error, HTTPError # محاولة المكان الثالث
-    except ImportError:
-        from rfc3161ng import RFC3161Error, HTTPError # المحاولة الأصلية
+
+
+import datetime, hashlib, os, joblib, numpy as np
+
+# Final fix to trigger redeploy
+app = FastAPI()
+
+# Configuration (Replace if need
 
 import datetime, hashlib, os, joblib, numpy as np
 
