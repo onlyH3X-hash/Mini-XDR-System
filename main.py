@@ -116,20 +116,20 @@ async def list_events():
             # 1. تحويل ObjectId إلى str
             event['_id'] = str(event['_id'])
             
-            # 2. **الحل النهائي لخطأ التاريخ:** تحويل كائن datetime إلى نص ISO
-            if isinstance(event['timestamp'], datetime.datetime):
-                event['timestamp'] = event['timestamp'].isoformat()
+            # 2. **التعديل الحاسم:** التحقق من وجود 'timestamp' قبل التحويل
+            if 'timestamp' in event:
+                # 3. التحويل الآمن
+                if isinstance(event['timestamp'], datetime.datetime):
+                    event['timestamp'] = event['timestamp'].isoformat()
             
             events_list.append(event)
         
         return events_list
     except Exception as e:
-        # هنا سنعيد الخطأ 500 إذا استمرت المشكلة
         raise HTTPException(
             status_code=500, 
-            detail=f"Internal Server Error during data retrieval: {e}"
+            detail=f"Internal Server Error during data retrieval: {e}" 
         )
-
 
 @app.post("/log", response_model=EventRecord, summary="تسجيل حدث أمني جديد وتحليل الخطر")
 async def log_event(event_input: EventDataInput):
