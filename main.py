@@ -156,13 +156,14 @@ async def lifespan(app: FastAPI):
 
 # تهيئة تطبيق FastAPI
 app = FastAPI(
-    title="Mini-XDR System",
+    title="Mini-XDR System 1.0.0",
     description="منصة للكشف عن التهديدات والرد الآلي (XDR/SOAR) باستخدام الذكاء الاصطناعي.",
     version="1.0.0",
-    docs_url="/docs",
-    lifespan=lifespan
+    lifespan=lifespan,
+    # التعديلات التي تجعل الواجهة احترافية:
+    docs_url=None,           # 1. إلغاء واجهة Swagger UI الافتراضية (/docs)
+    redoc_url="/docs"        # 2. تمكين Redoc وجعلها تظهر على المسار /docs
 )
-
 # =================================================================
 # مسارات FastAPI الرئيسية
 # =================================================================
