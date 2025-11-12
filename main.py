@@ -8,7 +8,8 @@ import datetime, hashlib, os, joblib, numpy as np
 import json
 from typing import List, Any
 from bson import ObjectId
-
+from faker import Faker 
+import json
 # *********************************
 # Imports جديدة لخاصية الإيميل (SOAR)
 import smtplib
@@ -73,10 +74,29 @@ def send_alert_email(event_data: dict):
     return 
 
 def isolate_device(ip_address: str):
-    """محاكاة إرسال أمر عزل الجهاز (إثبات نية SOAR)."""
-    # هذا يمثل الأمر الذي سيتم إرساله إلى جدار حماية أو EDR (إثبات منطق SOAR)
+    """محاكاة إرسال أمر عزل الجهاز (إثبات نية SOAR).
+    
+    يتم دمج FAKER هنا لإثبات الخداع الأمني.
+    """
+    
+    fake = Faker() # تهيئة Faker 
+    
+    # 1. طباعة أمر العزل (إثبات النية)
     print(f"🛑 SOAR ACTION: Isolation command issued for IP: {ip_address} (Proof of Intent)")
-
+    
+    # 2. توليد بيانات مزيفة لـ Deception (إثبات استخدام Faker كفخ)
+    fake_creds = {
+        "fake_username": fake.user_name(),
+        "fake_password": fake.password(),
+        "fake_api_key": fake.sha256()
+    }
+    
+    print("   [FAKER/DECEPTION]: Generating and deploying fake credentials in isolated environment.")
+    # استخدام json.dumps لتنسيق البيانات في السجل
+    print(f"   Fake Credentials: {json.dumps(fake_creds, indent=2, ensure_ascii=False)}")
+    
+    # 3. إظهار الإلهاء (Mocking Redirection)
+    print("   [SANDBOX]: Redirecting traffic from isolated IP to Deception Sandbox...")
 # =================================================================
 # وظائف التوثيق والذكاء الاصطناعي
 # =================================================================
