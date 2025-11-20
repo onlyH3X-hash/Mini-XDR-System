@@ -1,21 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 from pymongo import MongoClient
-from rfc3161ng import get_timestamp 
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 import datetime, hashlib, os, joblib, numpy as np
 import json
-from typing import List, Any
+from typing import List, Any, Optional
 from bson import ObjectId
 from faker import Faker 
-import json
-# *********************************
-# Imports جديدة لخاصية الإيميل (SOAR)
-import smtplib
-from email.message import EmailMessage 
 import time
+
 # *********************************
+# إعدادات SOAR و FAKER
+# *********************************
+fake = Faker() 
 
 # =================================================================
 # 1. تعريف نموذج الإدخال (Input Model)
@@ -28,15 +27,19 @@ class EventDataInput(BaseModel):
     details: dict = Field(default_factory=dict, description="تفاصيل إضافية للحدث.")
 
 # =================================================================
-# 2. تعريف نموذج الإخراج والتخزين (Storage/Output Model)
+# 2. تعريف نموذج الإخراج والتخزين المُثرى (Enriched Storage/Output Model)
 # =================================================================
-class EventRecord(EventDataInput):
-    """النموذج الكامل للحدث كما هو مخزن في قاعدة البيانات (الإخراج)."""
-    # نستخدم alias="_id" لربط الحقل 'id' بـ '_id' في MongoDB
+class EnrichedEventRecord(EventDataInput):
+    """النموذج الكامل للحدث كما هو مخزن في قاعدة البيانات (بعد الإثراء)."""
     id: str = Field(alias="_id", default_factory=lambda: str(ObjectId()), description="معرف MongoDB الفريد للحدث.")
     timestamp: datetime.datetime = Field(default_factory=datetime.datetime.now, description="وقت وقوع الحدث.")
     risk_score: float = Field(default=0.0, description="درجة الخطر المحسوبة بواسطة الذكاء الاصطناعي (0.0 - 1.0).")
     event_hash: str = Field(..., description="تجزئة SHA256 للحدث لضمان سلسلة الحراسة.")
+    
+    # حقول إثراء الثغرات الجديدة
+    cve_id: Optional[str] = Field(None, description="معرف الثغرة المرتبط (CVE-ID) بعد عملية الإثراء.")
+    cvss_score: Optional[float] = Field(None, description="درجة الخطورة وفقاً لمعيار CVSS V3.")
+    vulnerability_description: Optional[str] = Field(None, description="وصف موجز للثغرة.")
 
     class Config:
         populate_by_name = True
@@ -44,242 +47,281 @@ class EventRecord(EventDataInput):
         arbitrary_types_allowed = True
 
 # =================================================================
-# وظائف SOAR التنفيذية
+# 3. قاعدة بيانات الثغرات الأمنية الوهمية (NVD Mock)
+# =================================================================
+VULN_DB_MOCK = {
+    "DNS_Tunneling_Attempt": {
+        "cve_id": "CVE-2024-4511",
+        "cvss_score": 9.8,
+        "vulnerability_description": "Critical vulnerability allowing data exfiltration via DNS tunneling in outdated client-side resolvers."
+    },
+    "Brute_Force_Attack": {
+        "cve_id": "CVE-2023-9005",
+        "cvss_score": 7.5,
+        "vulnerability_description": "High-severity weakness in weak password policy allowing excessive login attempts."
+    },
+    "Malware Detected": {
+        "cve_id": "CVE-2024-0001",
+        "cvss_score": 8.8,
+        "vulnerability_description": "Execution of unknown binary leading to unauthorized data modification."
+    }
+}
+
+# =================================================================
+# 4. إعداد التطبيق (App Setup and Lifespan)
+# =================================================================
+
+model = None
+client = None
+db = None
+events = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """تهيئة وإغلاق الموارد الحيوية (قاعدة البيانات ونموذج الذكاء الاصطناعي)."""
+    global model, client, db, events
+    
+    # تهيئة MongoDB
+    MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0")
+    try:
+        client = MongoClient(MONGO_URI)
+        client.admin.command('ping')
+        db = client["mini_xdr"]
+        events = db["events"]
+        print("✅ MongoDB connection established successfully.")
+    except Exception as e:
+        print(f"❌ Failed to connect to MongoDB: {e}")
+        client = None
+
+    # تحميل نموذج AI (Isolation Forest)
+    MODEL_PATH = "iso_model.joblib"
+    if os.path.exists(MODEL_PATH):
+        try:
+            model = joblib.load(MODEL_PATH)
+            print("✅ AI Model (Isolation Forest) loaded successfully.")
+        except Exception as e:
+            print(f"❌ Failed to load AI model: {e}")
+            model = None
+    else:
+        print("⚠️ Warning: AI Model not found. Risk score calculation will rely only on manual rules.")
+
+    yield # بدء تشغيل التطبيق
+
+    # إغلاق الموارد
+    if client:
+        client.close()
+        print("✅ MongoDB client closed gracefully.")
+
+app = FastAPI(
+    title="Mini-XDR Production-Ready SOAR Engine V3 - Contextualized",
+    description="نظام XDR متكامل مع AI، SOAR، وخاصية الخداع الأمني وإثراء سياق الثغرات.",
+    version="3.0.0",
+    lifespan=lifespan
+)
+
+# تفعيل CORS
+origins = ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =================================================================
+# 5. وظائف SOAR التنفيذية وإثراء البيانات
 # =================================================================
 
 def send_alert_email(event_data: dict):
-    """محاكاة إرسال تنبيه البريد الإلكتروني (لتجاوز قيود الشبكة)."""
+    """محاكاة إرسال تنبيه البريد الإلكتروني."""
     
-    # يجب أن تكون هذه المتغيرات مضبوطة في إعدادات Railway
     SENDER_EMAIL = os.getenv("SENDER_EMAIL") 
     RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
-    
-    # لا حاجة لـ PASSWORD في وضع المحاكاة
     
     if not SENDER_EMAIL or not RECEIVER_EMAIL:
         print("SMTP credentials are not set in Railway. Skipping real email alert simulation.")
         return
 
-    # *****************************************************************
-    # **** الحل النهائي لتجاوز حجب شبكة Railway - يحاكي النجاح ****
-    # *****************************************************************
-    
-    # محاكاة زمن الإرسال (5 ثوانٍ)، لتقليد وقت الاتصال الحقيقي
-    time.sleep(5) 
-    
+    time.sleep(1)
     print(f"✅ SOAR ACTION: Real alert email simulated successfully to {RECEIVER_EMAIL}!")
-    print("   (NOTE: Actual SMTP connection was restricted by network firewall, but SOAR logic is correct for the demo.)")
-    
-    # *****************************************************************
+    print("  (NOTE: Actual SMTP connection was restricted by network firewall, but SOAR logic is correct for the demo.)")
     return 
 
 def isolate_device(ip_address: str):
-    """محاكاة إرسال أمر عزل الجهاز (إثبات نية SOAR).
+    """تنفيذ العزل ودمج FAKER للخداع الأمني."""
     
-    يتم دمج FAKER هنا لإثبات الخداع الأمني.
-    """
-    
-    fake = Faker() # تهيئة Faker 
-    
-    # 1. طباعة أمر العزل (إثبات النية)
     print(f"🛑 SOAR ACTION: Isolation command issued for IP: {ip_address} (Proof of Intent)")
     
-    # 2. توليد بيانات مزيفة لـ Deception (إثبات استخدام Faker كفخ)
     fake_creds = {
         "fake_username": fake.user_name(),
         "fake_password": fake.password(),
         "fake_api_key": fake.sha256()
     }
     
-    print("   [FAKER/DECEPTION]: Generating and deploying fake credentials in isolated environment.")
-    # استخدام json.dumps لتنسيق البيانات في السجل
-    print(f"   Fake Credentials: {json.dumps(fake_creds, indent=2, ensure_ascii=False)}")
+    print("  [FAKER/DECEPTION]: Generating and deploying fake credentials in isolated environment.")
+    print(f"  Fake Credentials: {json.dumps(fake_creds, indent=2, ensure_ascii=False)}")
     
-    # 3. إظهار الإلهاء (Mocking Redirection)
-    print("   [SANDBOX]: Redirecting traffic from isolated IP to Deception Sandbox...")
+    print("  [SANDBOX]: Redirecting traffic from isolated IP to Deception Sandbox...")
+    return True
+
+def lookup_vulnerability_context(event_type: str) -> dict:
+    """
+    استدعاء وهمي لقاعدة بيانات الثغرات (مثل NVD) لإثراء البيانات.
+    """
+    context = VULN_DB_MOCK.get(event_type)
+    
+    if context:
+        print(f"🌟 CONTEXT ENRICHMENT: Found CVE-ID {context['cve_id']} for {event_type}. CVSS: {context['cvss_score']}")
+        return context
+    
+    print(f"✨ CONTEXT ENRICHMENT: No specific CVE found for {event_type}. Continuing...")
+    return {}
+
 # =================================================================
-# وظائف التوثيق والذكاء الاصطناعي
+# 6. وظائف التوثيق والكشف
 # =================================================================
 
 def compute_sha256(data: dict) -> str:
     """حساب تجزئة SHA256 للحدث لضمان سلسلة الحراسة (CoC)."""
-    # يجب تحويل القاموس إلى سلسلة JSON مرتبة لضمان نفس التجزئة في كل مرة
     event_string = json.dumps(data, sort_keys=True, default=str).encode('utf-8')
     return hashlib.sha256(event_string).hexdigest()
 
+def check_rate_limiting(ip_address: str, event_type: str, window_seconds: int = 10, max_attempts: int = 5) -> bool:
+    """
+    يتحقق من عدد مرات تكرار حدث معين (مثل الفشل في تسجيل الدخول)
+    في نافذة زمنية محددة للكشف عن هجمات القوة الغاشمة (Brute-Force).
+    """
+    if not events:
+        return False
+
+    time_threshold = datetime.datetime.now() - datetime.timedelta(seconds=window_seconds)
+    
+    query = {
+        "source_ip": ip_address,
+        "event_type": event_type,
+        "timestamp": {"$gte": time_threshold}
+    }
+    
+    # يجب إدراج المحاولة الحالية في العد، لذا نستخدم +1
+    count = events.count_documents(query) + 1 
+    
+    print(f"  [RATE CHECK]: {ip_address} has {count} attempts of '{event_type}' in the last {window_seconds} seconds.")
+
+    return count >= max_attempts
+
 def score_event(event_data: dict) -> float:
-    """يحسب درجة الخطر للحدث باستخدام نموذج Isolation Forest."""
+    """يحسب درجة الخطر للحدث باستخدام نموذج Isolation Forest أو القواعد اليدوية."""
     
-    # *****************************************************************
-    # إضافة هذا المنطق اليدوي المؤقت لإثبات عمل SOAR بنسبة 100%
-    if event_data['event_type'] == "DNS_Tunneling_Attempt":
-        print("!! Manual Override: Event type is critical. Setting risk to 1.0 !!")
+    # القاعدة 1: الكشف عن هجمات الحقن/الأنفاق الواضحة
+    if event_data['event_type'] in VULN_DB_MOCK.keys() or event_data['event_type'] in ["Unauthorized Access"]:
+        print("!! Manual Override: Event type is known critical or injection-based. Setting risk to 1.0 !!")
         return 1.0
-    # *****************************************************************
     
+    # القاعدة 2: الكشف عن هجمات القوة الغاشمة (Brute-Force)
+    if event_data['event_type'] == "Failed_Login_Attempt":
+        # الآن نمرر الحدث الحالي لتضمينه في check_rate_limiting
+        if check_rate_limiting(event_data['source_ip'], "Failed_Login_Attempt", window_seconds=10, max_attempts=5):
+            print("!! Manual Override: Brute-Force threshold exceeded. Setting risk to 1.0 !!")
+            return 1.0
+        
+    # منطق الذكاء الاصطناعي (إذا لم يكن هناك قواعد يدوية حاسمة)
+    if not model:
+        return 0.0
+
     try:
-        # استخدام مصدر الـ IP ونوع الحدث كميزات
-        ip_feature = int(hashlib.sha1(event_data['source_ip'].encode()).hexdigest(), 16) % (10**8)
-        type_feature = int(hashlib.sha1(event_data['event_type'].encode()).hexdigest(), 16) % (10**8)
+        # ملاحظة: تم تعديل hashlib.sha1 إلى hashlib.sha256 لتوحيد استخدام التجزئة
+        ip_feature = int(hashlib.sha256(event_data['source_ip'].encode()).hexdigest(), 16) % (10**8)
+        type_feature = int(hashlib.sha256(event_data['event_type'].encode()).hexdigest(), 16) % (10**8)
         
         features = np.array([[ip_feature, type_feature]])
+        prediction = model.predict(features)[0]
         
-        prediction = app.model.predict(features)[0]
-        
-        risk_score = 1.0 if prediction == -1 else 0.0
-        
-        return risk_score
+        if prediction == -1:
+            return 1.0
+        return 0.0
     except Exception as e:
-        print(f"AI scoring failed, defaulting to 0.0: {e}")
+        print(f"Error during AI scoring: {e}")
         return 0.0
 
 # =================================================================
-# تهيئة التطبيق وإدارة الموارد (MongoDB)
+# 7. مسارات API لـ FastAPI
 # =================================================================
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """تهيئة الموارد عند بدء التشغيل وإغلاقها عند الإغلاق."""
-    
-    # --- 1. إعداد MongoDB ---
-    MONGO_URI = os.getenv("MONGO_URI") 
-    if not MONGO_URI:
-        raise ValueError("MONGO_URI environment variable is not set!")
-    
-    app.mongodb_client = MongoClient(MONGO_URI)
-    # اسم قاعدة البيانات
-    app.database = app.mongodb_client.mini_xdr_db
-    # اسم المجموعة (Collection)
-    app.events_collection = app.database.events
-    print("✅ MongoDB Atlas connection established.")
-    
-    # --- 2. إعداد نموذج الذكاء الاصطناعي ---
-    
 
-# تهيئة تطبيق FastAPI
-# تحميل النموذج الذي تم تدريبه مسبقًا
+@app.post("/log", response_model=EnrichedEventRecord)
+async def log_event(event_input: EventDataInput, request: Request):
+    """
+    استلام الأحداث الأمنية، حساب درجة الخطورة، وتخزينها، وتنفيذ SOAR عند الضرورة وإثراء البيانات.
+    """
+    if not events:
+        raise HTTPException(status_code=503, detail="Database not initialized.")
+
     try:
-        app.model = joblib.load('isolation_forest_model.pkl')
-        print("✅ AI Model (Isolation Forest) loaded successfully.")
-    except FileNotFoundError:
-        # إذا لم يتم العثور على النموذج، قم بإنشاء نموذج أساسي (مهم للنشر الأول)
-        from sklearn.ensemble import IsolationForest
-        app.model = IsolationForest(contamination='auto', random_state=42).fit([[0,0], [1,1]])
-        print("⚠️ Warning: Pre-trained AI model not found. Created a basic model.")
-
-
-    yield # البدء في استقبال الطلبات
-
-    # --- 3. إغلاق الاتصالات عند الإغلاق ---
-    app.mongodb_client.close()
-    print("❌ MongoDB connection closed.")
-
-
-# تهيئة تطبيق FastAPI
-# ... (بقية الـ imports في بداية الملف)
-
-# يجب استيراد نجمة Starlette لتطبيق التعديلات التالية
-# from starlette.staticfiles import StaticFiles # ليس ضرورياً لهذا الحل، لكن قد تحتاجه مستقبلاً
-
-# ... (دالة lifespan تبقى كما هي)
-
-# =================================================================
-# ... (جزء تهيئة FastAPI)
-
-app = FastAPI(
-    title="Mini-XDR System 1.0.0",
-    description="منصة للكشف عن التهديدات والرد الآلي (XDR/SOAR) باستخدام الذكاء الاصطناعي.",
-    version="1.0.0",
-    lifespan=lifespan,
-    
-    docs_url="/docs",
-    redoc_url=None,
-    # استخدام ثيم Dracula الأنيق (بدون فاصلة في النهاية)
-    swagger_ui_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-themes@3.0.1/themes/3.x/theme-dracula.css"
-)
-# =================================================================
-# مسارات FastAPI الرئيسية
-# =================================================================
-@app.get("/")
-def home():
-    return {"status": "mini XDR running and READY!"}
-
-
-@app.get("/events", response_model=List[EventRecord], summary="جلب جميع الأحداث الأمنية المسجلة")
-async def list_events():
-    """يجلب جميع الوثائق من مجموعة 'events' ويعرضها كقائمة."""
-    events_list = []
-    # هنا لن نستخدم try/except حول الدالة كلها، بل حول كل عنصر
-    for event in app.events_collection.find():
-        try:
-            # 1. تحويل ObjectId إلى str
-            event['_id'] = str(event['_id'])
+        # 1. حساب درجة الخطورة (Risk Score)
+        event_data_dict = event_input.model_dump()
+        risk_score = score_event(event_data_dict)
+        
+        # 2. إنشاء هاش التوثيق (CoC)
+        event_hash = compute_sha256(event_data_dict)
+        
+        # 3. إعداد الوثيقة الأساسية للتخزين
+        event_document = event_data_dict
+        event_document.update({
+            "timestamp": datetime.datetime.now(),
+            "risk_score": risk_score,
+            "event_hash": event_hash,
+            # تعيين القيم الافتراضية للـ Context
+            "cve_id": None,
+            "cvss_score": None,
+            "vulnerability_description": None
+        })
+        
+        # 4. تنفيذ الرد الآلي (SOAR) وإثراء السياق (CONTEXT ENRICHMENT)
+        if risk_score == 1.0:
+            print(f"\n🔥 CRITICAL ALERT: Risk Score 1.0 for IP {event_input.source_ip}. Initiating SOAR Playbook...")
             
-            # 2. التحقق والتحويل الآمن للـ timestamp
-            if 'timestamp' in event and isinstance(event['timestamp'], datetime.datetime):
-                event['timestamp'] = event['timestamp'].isoformat(timespec='milliseconds')
+            # ** خطوة الإثراء **
+            context = lookup_vulnerability_context(event_input.event_type)
+            if context:
+                event_document.update({
+                    "cve_id": context.get("cve_id"),
+                    "cvss_score": context.get("cvss_score"),
+                    "vulnerability_description": context.get("vulnerability_description")
+                })
             
-            # 3. محاولة إنشاء نموذج EventRecord للتحقق من صلاحية البيانات
-            validated_event = EventRecord.model_validate(event) 
-            events_list.append(validated_event)
+            # تنفيذ الرد الآلي
+            isolation_successful = isolate_device(event_input.source_ip)
+            if isolation_successful:
+                send_alert_email(event_document)
 
-        except ValidationError as e:
-            # تجاهل الوثائق غير الصالحة (القديمة)
-            print(f"Skipping invalid document due to validation error: {e.errors()[:1]}") 
-            continue 
-        except Exception as e:
-            # تجاهل أي أخطاء أخرى غير متوقعة
-            print(f"Skipping document due to unexpected error: {e}")
-            continue
-
-    # إذا حدث خطأ MongoDB نفسه، نستخدم HTTP Exception
-    try:
-        return events_list
+        # 5. التخزين في MongoDB
+        result = events.insert_one(event_document)
+        
+        # 6. إرجاع المستند المخزن كاملاً وفقاً لـ EnrichedEventRecord
+        event_document['_id'] = result.inserted_id
+        return EnrichedEventRecord(**event_document)
+        
     except Exception as e:
-         raise HTTPException(
-            status_code=500, 
-            detail="Error converting documents to response format."
-        )
+        print(f"An error occurred in /log: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
 
-
-@app.post("/log", response_model=EventRecord, summary="تسجيل حدث أمني جديد وتحليل الخطر")
-async def log_event(event_input: EventDataInput):
-    """يسجل حدث أمن جديد ويقوم بحساب درجة خطورته."""
-    
-    # 1. تحويل نموذج الإدخال إلى قاموس وتحديد الوقت
-    event_dict = event_input.model_dump()
-    event_dict['timestamp'] = datetime.datetime.now()
-    
-    # 2. حساب تجزئة SHA256 (سلسلة الحراسة - CoC)
-    event_dict['event_hash'] = compute_sha256(event_dict)
-    
-    # 3. إضافة ختم الوقت الموثوق (RFC3161 - محاكاة)
-    # RFC3161_TS = get_timestamp(event_dict['event_hash'])
-    # event_dict['rfc3161_timestamp'] = str(RFC3161_TS)
-    
-    # 4. حساب درجة الخطر باستخدام Isolation Forest
-    risk_score = score_event(event_dict)
-    event_dict['risk_score'] = risk_score
-    
-    # 5. منطق SOAR الفعلي (الرد الآلي)
-    if risk_score == 1.0:
-        print("!! تم اكتشاف حدث خطر. يتم تنفيذ إجراءات الرد الآلي (SOAR) !!")
+@app.get("/events", response_model=List[EnrichedEventRecord])
+async def get_events():
+    """
+    جلب آخر 20 حدث أمني من MongoDB للعرض على لوحة القيادة (مع بيانات الإثراء).
+    """
+    if not events:
+        raise HTTPException(status_code=503, detail="Database not initialized.")
         
-        # أ. إرسال تنبيه بالبريد الإلكتروني (العمل الفعلي)
-        send_alert_email(event_dict)
-        
-        # ب. تنفيذ أمر عزل الجهاز (إثبات النية)
-        isolate_device(event_dict['source_ip']) 
-        
-    # 6. التوثيق والتخزين النهائي
     try:
-        result = app.events_collection.insert_one(event_dict)
-        # التأكد من إرجاع ObjectId كسلسلة نصية
-        event_dict['_id'] = str(result.inserted_id) 
-        
-        return EventRecord.model_validate(event_dict)
-    except Exception as e:
-        # هنا قد تحدث مشاكل في الاتصال بقاعدة البيانات
-        raise HTTPException(
-            status_code=400, 
-            detail={"status": "Failed to log event to MongoDB", "error": str(e)}
+        latest_events = list(
+            events.find({})
+                  .sort("timestamp", -1)
+                  .limit(20)
         )
+        
+        return [EnrichedEventRecord(**event) for event in latest_events]
+    
+    except Exception as e:
+        print(f"Error fetching events: {e}")
+        return []

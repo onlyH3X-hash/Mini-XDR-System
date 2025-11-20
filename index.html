@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini-XDR Security Dashboard</title>
+    <!-- تحميل Tailwind CSS للتصميم الاحترافي -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- خط Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    <style>
+        /* الخط الرئيسي والتمرير الأنيق (Dark Mode Styling) */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1a1a2e; /* خلفية داكنة جداً */
+            color: #e4e4e7; /* نص فاتح */
+            scroll-behavior: smooth;
+        }
+        /* تصميم شريط التمرير لأجواء داكنة */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4a4e69;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1a1a2e;
+        }
+        /* حالة التحميل - الدوران */
+        .loader {
+            border-top-color: #f3f3f3;
+            border-right-color: #f3f3f3;
+            border-bottom-color: #f3f3f3;
+            border-left-color: #6366f1;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <!-- العنوان ولوحة القياس -->
+    <header class="mb-10 text-center">
+        <h1 class="text-4xl font-extrabold text-[#93c5fd] tracking-tight">Mini-XDR Security Dashboard</h1>
+        <p class="text-lg text-gray-400 mt-2">نظام متقدم للكشف عن التهديدات والرد الآلي (XDR/SOAR)</p>
+    </header>
+
+    <div id="dashboard-stats" class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
+        <!-- سيتم ملء بطاقات الإحصائيات هنا بواسطة JavaScript -->
+    </div>
+
+    <!-- قسم الأحداث الأمنية -->
+    <section class="bg-[#24263a] p-6 rounded-xl shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-white border-b border-indigo-700 pb-2">سجل الأحداث الأمنية (SIEM View)</h2>
+        
+        <div id="loading-indicator" class="flex justify-center items-center h-48">
+            <div class="loader ease-linear rounded-full border-8 border-t-8 h-16 w-16"></div>
+            <span class="mr-4 text-xl text-indigo-400">جاري تحميل الأحداث...</span>
+        </div>
+
+        <div id="events-table-container" class="overflow-x-auto hidden">
+            <table class="min-w-full divide-y divide-indigo-800">
+                <thead class="bg-[#3a3b5a]">
+                    <tr>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">الخطورة</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">نوع الحدث</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">IP المصدر</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">التفاصيل</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">وقت التسجيل</th>
+                        <th class="px-6 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">هاش التوثيق</th>
+                    </tr>
+                </thead>
+                <tbody id="events-table-body" class="divide-y divide-indigo-900">
+                    <!-- سيتم ملء صفوف الأحداث هنا -->
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- منطقة الرسائل والمحاكاة (لمشاهدة الخداع) -->
+    <div id="message-box" class="fixed top-4 left-1/2 transform -translate-x-1/2 p-4 rounded-xl shadow-2xl hidden z-50 transition-opacity duration-300" style="min-width: 300px;">
+        <p id="message-text" class="font-bold text-center"></p>
+    </div>
+
+    <script>
+        const API_BASE_URL = window.location.origin; // يضمن الاتصال بـ FastAPI على نفس عنوان URL
+        const EVENTS_URL = `${API_BASE_URL}/events`;
+
+        // إظهار رسالة مؤقتة (لإثبات الـ SOAR)
+        function showMessage(text, type) {
+            const box = document.getElementById('message-box');
+            const textElement = document.getElementById('message-text');
+            
+            box.classList.remove('hidden', 'bg-green-600', 'bg-red-600', 'bg-blue-600');
+            box.classList.add('opacity-100');
+
+            if (type === 'success') {
+                box.classList.add('bg-green-600');
+            } else if (type === 'error') {
+                box.classList.add('bg-red-600');
+            } else {
+                box.classList.add('bg-blue-600');
+            }
+
+            textElement.textContent = text;
+
+            setTimeout(() => {
+                box.classList.remove('opacity-100');
+                box.classList.add('hidden');
+            }, 5000);
+        }
+
+        // تحويل التاريخ إلى تنسيق مقروء
+        function formatTimestamp(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleString('ar-EG', { 
+                year: 'numeric', 
+                month: 'short', 
+                day: 'numeric', 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit',
+                hour12: false
+            });
+        }
+
+        // توليد HTML لصف الأحداث
+        function createEventRow(event) {
+            const isRisky = event.risk_score === 1;
+            const rowClass = isRisky ? 'bg-red-900/50 hover:bg-red-800/50' : 'bg-[#2f3148] hover:bg-[#3f415c]';
+            
+            let riskBadge = '';
+            if (isRisky) {
+                riskBadge = '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-600 text-white">خطر (1.0)</span>';
+                // إظهار رسالة SOAR في الواجهة البصرية
+                showMessage(`⚠️ تم إطلاق SOAR: تم عزل IP ${event.source_ip} ونشر فخ (FAKER)!`, 'error');
+            } else {
+                riskBadge = '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-600 text-white">آمن (0.0)</span>';
+            }
+
+            // عرض التفاصيل كـ JSON منسق
+            const detailsText = JSON.stringify(event.details, null, 2);
+
+            return `
+                <tr class="${rowClass} transition duration-150 ease-in-out">
+                    <td class="px-6 py-4 whitespace-nowrap">${riskBadge}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-indigo-300">${event.event_type}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-100">${event.source_ip}</td>
+                    <td class="px-6 py-4 text-sm text-gray-300">
+                        <pre class="overflow-x-auto text-xs bg-[#1a1a2e] p-2 rounded-lg">${detailsText}</pre>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">${formatTimestamp(event.timestamp)}</td>
+                    <td class="px-6 py-4 text-sm font-mono text-gray-500 truncate" title="Chain of Custody Hash">${event.event_hash.substring(0, 15)}...</td>
+                </tr>
+            `;
+        }
+
+        // جلب البيانات من API
+        async function fetchEvents() {
+            const loadingIndicator = document.getElementById('loading-indicator');
+            const tableContainer = document.getElementById('events-table-container');
+            const tableBody = document.getElementById('events-table-body');
+            const dashboardStats = document.getElementById('dashboard-stats');
+
+            try {
+                // محاولة الجلب مع الـ Retry (Exponential Backoff)
+                let response;
+                let data;
+                
+                for (let i = 0; i < 3; i++) { // محاولة 3 مرات
+                    response = await fetch(EVENTS_URL);
+                    if (response.ok) {
+                        data = await response.json();
+                        break;
+                    }
+                    if (i < 2) await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000)); // انتظر 1s, 2s
+                }
+
+                if (!data) throw new Error("فشل جلب البيانات بعد محاولات متعددة.");
+
+
+                // 1. تحديث جدول الأحداث
+                tableBody.innerHTML = '';
+                // تخزين آخر هاش مُخزّن مؤقتاً لتجنب إطلاق الـ SOAR المتكرر لنفس الحدث
+                let lastKnownHash = tableBody.getAttribute('data-last-hash');
+
+                data.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)) // ترتيب تنازلي حسب الوقت
+                    .slice(0, 20) // عرض آخر 20 حدث فقط
+                    .forEach(event => {
+                        // إذا كان الحدث خطرًا وجديدًا (أي لم يتم عرضه بعد)، قم بإطلاق showMessage
+                        if (event.risk_score === 1 && event.event_hash !== lastKnownHash) {
+                            showMessage(`⚠️ تم إطلاق SOAR: تم عزل IP ${event.source_ip} ونشر فخ (FAKER)!`, 'error');
+                        }
+                        tableBody.innerHTML += createEventRow(event);
+                    });
+
+                // تحديث آخر هاش مُخزن بعد العرض لتجنب التنبيه المتكرر
+                if(data.length > 0) {
+                     tableBody.setAttribute('data-last-hash', data[0].event_hash);
+                }
+
+
+                // 2. تحديث لوحة القياس
+                const totalEvents = data.length;
+                const riskyEvents = data.filter(e => e.risk_score === 1).length;
+                const safeEvents = totalEvents - riskyEvents;
+                const latestTimestamp = data.length > 0 ? formatTimestamp(data[0].timestamp) : 'لا توجد بيانات';
+
+                dashboardStats.innerHTML = `
+                    ${createStatCard('إجمالي الأحداث', totalEvents, 'blue')}
+                    ${createStatCard('أحداث خطرة (SOAR)', riskyEvents, 'red')}
+                    ${createStatCard('أحداث آمنة', safeEvents, 'green')}
+                    ${createStatCard('آخر تحديث', latestTimestamp, 'gray', 'text-sm')}
+                `;
+
+                loadingIndicator.classList.add('hidden');
+                tableContainer.classList.remove('hidden');
+                
+            } catch (error) {
+                loadingIndicator.innerHTML = `<p class="text-red-500 text-xl">حدث خطأ في جلب البيانات: ${error.message}. تأكد من أن تطبيق FastAPI يعمل.</p>`;
+                console.error("Error fetching events:", error);
+            }
+        }
+
+        // دالة مساعدة لإنشاء بطاقة الإحصائيات
+        function createStatCard(title, value, color, valueSize = 'text-3xl') {
+            const colorMap = {
+                blue: { bg: 'bg-blue-600', text: 'text-blue-200' },
+                red: { bg: 'bg-red-600', text: 'text-red-200' },
+                green: { bg: 'bg-green-600', text: 'text-green-200' },
+                gray: { bg: 'bg-gray-600', text: 'text-gray-200' }
+            };
+
+            const colors = colorMap[color] || colorMap.blue;
+
+            return `
+                <div class="p-5 ${colors.bg}/20 rounded-xl shadow-lg border-t-4 border-${color}-500 transition duration-300 hover:shadow-xl">
+                    <p class="text-sm font-medium ${colors.text}">${title}</p>
+                    <p class="${valueSize} font-bold mt-1 text-white">${value}</p>
+                </div>
+            `;
+        }
+
+        // تشغيل الجلب عند تحميل الصفحة والتحديث المستمر
+        window.onload = () => {
+            fetchEvents();
+            // تحديث البيانات كل 10 ثوانٍ
+            setInterval(fetchEvents, 10000); 
+        };
+    </script>
+</body>
+</html>
