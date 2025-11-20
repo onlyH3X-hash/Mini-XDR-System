@@ -261,23 +261,39 @@ async def log_event(event_input: EventDataInput, request: Request):
 
 @app.get("/events", response_model=List[EnrichedEventRecord])
 async def get_events():
+    """
+    جلب الأحداث الصالحة فقط وتجاهل البيانات القديمة أو التالفة.
+    """
     if events is None:
-        raise HTTPException(status_code=503, detail="Database not initialized or connection failed.")
+        raise HTTPException(status_code=503, detail="Database not initialized.")
         
     try:
-        latest_events = list(
+        # 1. جلب البيانات الخام
+        raw_events = list(
             events.find({})
                   .sort("timestamp", -1)
                   .limit(20)
         )
         
-        # ✅✅ التصحيح: تحويل ObjectId إلى string لكل حدث في القائمة ✅✅
-        for event in latest_events:
-            if '_id' in event:
-                event['_id'] = str(event['_id'])
+        valid_events = []
         
-        return [EnrichedEventRecord(**event) for event in latest_events]
+        # 2. فحص كل حدث على حدة
+        for event in raw_events:
+            try:
+                # تحويل ID
+                if '_id' in event:
+                    event['_id'] = str(event['_id'])
+                
+                # محاولة تحويل البيانات إلى النموذج الجديد
+                # إذا نجح التحويل، نضيفه للقائمة
+                valid_events.append(EnrichedEventRecord(**event))
+            except Exception as inner_e:
+                # إذا فشل حدث واحد (بسبب بيانات قديمة)، نطبعه في السجل ونتجاهله
+                print(f"Skipping invalid event: {inner_e}")
+                continue
+        
+        return valid_events
     
     except Exception as e:
-        print(f"Error fetching events: {e}")
+        print(f"Global error fetching events: {e}")
         return []
