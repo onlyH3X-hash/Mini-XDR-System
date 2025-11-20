@@ -42,6 +42,7 @@ class EnrichedEventRecord(EventDataInput):
     vulnerability_description: Optional[str] = Field(None, description="وصف موجز للثغرة.")
 
     class Config:
+        # إعدادات Pydantic
         populate_by_name = True
         json_encoders = {ObjectId: str}
         arbitrary_types_allowed = True
@@ -74,7 +75,7 @@ VULN_DB_MOCK = {
 model = None
 client = None
 db = None
-events = None
+events = None # سيكون None إذا فشل الاتصال
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
     global model, client, db, events
     
     # تهيئة MongoDB
+    # استخدام قيمة افتراضية إذا لم يتم تعيين متغير البيئة
     MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0")
     try:
         client = MongoClient(MONGO_URI)
@@ -91,7 +93,10 @@ async def lifespan(app: FastAPI):
         print("✅ MongoDB connection established successfully.")
     except Exception as e:
         print(f"❌ Failed to connect to MongoDB: {e}")
+        # إذا فشل الاتصال، ستبقى المتغيرات client, db, events بقيمة None
         client = None
+        db = None
+        events = None
 
     # تحميل نموذج AI (Isolation Forest)
     MODEL_PATH = "iso_model.joblib"
@@ -107,19 +112,19 @@ async def lifespan(app: FastAPI):
 
     yield # بدء تشغيل التطبيق
 
-    # إغلاق الموارد
+    # إغلاق الموارد بعد انتهاء دورة حياة التطبيق
     if client:
         client.close()
         print("✅ MongoDB client closed gracefully.")
 
 app = FastAPI(
-    title="Mini-XDR Production-Ready SOAR Engine V3 - Contextualized",
+    title="Mini-XDR Production-Ready SOAR Engine V3 - Contextualized (Fixed)",
     description="نظام XDR متكامل مع AI، SOAR، وخاصية الخداع الأمني وإثراء سياق الثغرات.",
-    version="3.0.0",
+    version="3.0.1",
     lifespan=lifespan
 )
 
-# تفعيل CORS
+# تفعيل CORS للسماح بالوصول من أي مصدر
 origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
@@ -192,7 +197,8 @@ def check_rate_limiting(ip_address: str, event_type: str, window_seconds: int = 
     يتحقق من عدد مرات تكرار حدث معين (مثل الفشل في تسجيل الدخول)
     في نافذة زمنية محددة للكشف عن هجمات القوة الغاشمة (Brute-Force).
     """
-    if not events:
+    # **التصحيح الهام**: يجب المقارنة بـ None وليس باستخدام if not events
+    if events is None:
         return False
 
     time_threshold = datetime.datetime.now() - datetime.timedelta(seconds=window_seconds)
@@ -226,11 +232,10 @@ def score_event(event_data: dict) -> float:
             return 1.0
         
     # منطق الذكاء الاصطناعي (إذا لم يكن هناك قواعد يدوية حاسمة)
-    if not model:
+    if model is None: 
         return 0.0
 
     try:
-        # ملاحظة: تم تعديل hashlib.sha1 إلى hashlib.sha256 لتوحيد استخدام التجزئة
         ip_feature = int(hashlib.sha256(event_data['source_ip'].encode()).hexdigest(), 16) % (10**8)
         type_feature = int(hashlib.sha256(event_data['event_type'].encode()).hexdigest(), 16) % (10**8)
         
@@ -238,8 +243,8 @@ def score_event(event_data: dict) -> float:
         prediction = model.predict(features)[0]
         
         if prediction == -1:
-            return 1.0
-        return 0.0
+            return 1.0 # خطر مرتفع
+        return 0.0 # خطر منخفض
     except Exception as e:
         print(f"Error during AI scoring: {e}")
         return 0.0
@@ -253,8 +258,9 @@ async def log_event(event_input: EventDataInput, request: Request):
     """
     استلام الأحداث الأمنية، حساب درجة الخطورة، وتخزينها، وتنفيذ SOAR عند الضرورة وإثراء البيانات.
     """
-    if not events:
-        raise HTTPException(status_code=503, detail="Database not initialized.")
+    # **التصحيح الهام**: التحقق من تهيئة Collection باستخدام المقارنة بـ None
+    if events is None:
+        raise HTTPException(status_code=503, detail="Database not initialized or connection failed.")
 
     try:
         # 1. حساب درجة الخطورة (Risk Score)
@@ -310,18 +316,21 @@ async def get_events():
     """
     جلب آخر 20 حدث أمني من MongoDB للعرض على لوحة القيادة (مع بيانات الإثراء).
     """
-    if not events:
-        raise HTTPException(status_code=503, detail="Database not initialized.")
+    # **التصحيح الهام**: التحقق من تهيئة Collection باستخدام المقارنة بـ None
+    if events is None:
+        raise HTTPException(status_code=503, detail="Database not initialized or connection failed.")
         
     try:
         latest_events = list(
             events.find({})
-                  .sort("timestamp", -1)
-                  .limit(20)
+                  .sort("timestamp", -1) # الأحدث أولاً
+                  .limit(20) # آخر 20 حدث
         )
         
+        # إنشاء نماذج الإخراج
         return [EnrichedEventRecord(**event) for event in latest_events]
     
     except Exception as e:
         print(f"Error fetching events: {e}")
+        # في حالة وجود خطأ آخر غير خطأ التهيئة، إرجاع قائمة فارغة بدلاً من خطأ 500
         return []
