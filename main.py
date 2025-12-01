@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Request, HTTPException
-from pydantic import BaseModel, Field, ValidationError
+kfrom fastapi import FastAPI, Request, HTTPException
+# 🛠️ الإصلاح 1: تم إضافة ConfigDict و StrictFloat للاستخدام الصحيح مع Pydantic V2
+from pydantic import BaseModel, Field, ValidationError, ConfigDict, StrictFloat 
 from pymongo import MongoClient
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -8,13 +9,13 @@ import datetime, hashlib, os, joblib, numpy as np
 import json
 from typing import List, Any, Optional
 from bson import ObjectId
-from faker import Faker 
+from faker import Faker
 import time
 
 # *********************************
 # إعدادات SOAR و FAKER
 # *********************************
-fake = Faker() 
+fake = Faker()
 
 # =================================================================
 # 1. تعريف نموذج الإدخال (Input Model)
@@ -30,7 +31,19 @@ class EventDataInput(BaseModel):
 # 2. تعريف نموذج الإخراج والتخزين المُثرى (Enriched Storage/Output Model)
 # =================================================================
 class EnrichedEventRecord(EventDataInput):
-        arbitrary_types_allowed = True
+    """النموذج المخصب الذي يتم حفظه في MongoDB."""
+    # 🛠️ الإصلاح 2: حل مشكلة PydanticUserError
+    # تم استبدال 'arbitrary_types_allowed = True' بـ 'model_config = ConfigDict(...)'
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # 💡 تم إعادة إضافة الحقول المثرية الضرورية لكي يعمل مسار /log
+    timestamp: datetime.datetime = Field(default_factory=datetime.datetime.now)
+    event_hash: str
+    risk_score: StrictFloat = 0.0
+    cve_id: Optional[str] = None
+    cvss_score: Optional[StrictFloat] = None
+    vulnerability_description: Optional[str] = None
+
 
 # =================================================================
 # 3. قاعدة بيانات الثغرات الأمنية الوهمية (NVD Mock)
@@ -60,14 +73,17 @@ VULN_DB_MOCK = {
 model = None
 client = None
 db = None
-events = None 
+events = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """تهيئة وإغلاق الموارد الحيوية."""
     global model, client, db, events
     
-    MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0")
+    # 🛡️ الإصلاح الأمني 3: تم إزالة URI الصلب واستبداله بـ fallback محلي آمن
+    # يجب الاعتماد على متغير البيئة MONGO_URI في Railway
+    MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
+    
     try:
         client = MongoClient(MONGO_URI)
         client.admin.command('ping')
@@ -91,16 +107,16 @@ async def lifespan(app: FastAPI):
     else:
         print("⚠️ Warning: AI Model not found. Risk score calculation will rely only on manual rules.")
 
-    yield 
+    yield
 
     if client:
         client.close()
         print("✅ MongoDB client closed gracefully.")
 
 app = FastAPI(
-    title="Mini-XDR Production-Ready SOAR Engine V3.1",
-    description="نظام XDR متكامل مع إصلاحات أنواع البيانات.",
-    version="3.1.0",
+    title="Mini-XDR Production-Ready SOAR Engine V3.2", # تم تحديث الإصدار
+    description="نظام XDR متكامل مع إصلاحات أنواع البيانات والأمان.",
+    version="3.2.0",
     lifespan=lifespan
 )
 
@@ -119,7 +135,7 @@ app.add_middleware(
 
 def send_alert_email(event_data: dict):
     """محاكاة إرسال تنبيه البريد الإلكتروني."""
-    SENDER_EMAIL = os.getenv("SENDER_EMAIL") 
+    SENDER_EMAIL = os.getenv("SENDER_EMAIL")
     RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
     
     if not SENDER_EMAIL or not RECEIVER_EMAIL:
@@ -129,7 +145,7 @@ def send_alert_email(event_data: dict):
     time.sleep(1)
     print(f"✅ SOAR ACTION: Real alert email simulated successfully to {RECEIVER_EMAIL}!")
     print("  (NOTE: Actual SMTP connection was restricted by network firewall, but SOAR logic is correct for the demo.)")
-    return 
+    return
 
 def isolate_device(ip_address: str):
     """تنفيذ العزل ودمج FAKER للخداع الأمني."""
@@ -167,7 +183,7 @@ def check_rate_limiting(ip_address: str, event_type: str, window_seconds: int = 
         "event_type": event_type,
         "timestamp": {"$gte": time_threshold}
     }
-    count = events.count_documents(query) + 1 
+    count = events.count_documents(query) + 1
     print(f"  [RATE CHECK]: {ip_address} has {count} attempts of '{event_type}' in the last {window_seconds} seconds.")
     return count >= max_attempts
 
@@ -180,18 +196,20 @@ def score_event(event_data: dict) -> float:
         if check_rate_limiting(event_data['source_ip'], "Failed_Login_Attempt", window_seconds=10, max_attempts=5):
             print("!! Manual Override: Brute-Force threshold exceeded. Setting risk to 1.0 !!")
             return 1.0
-        
-    if model is None: 
+          
+    if model is None:
         return 0.0
 
     try:
         ip_feature = int(hashlib.sha256(event_data['source_ip'].encode()).hexdigest(), 16) % (10**8)
         type_feature = int(hashlib.sha256(event_data['event_type'].encode()).hexdigest(), 16) % (10**8)
         features = np.array([[ip_feature, type_feature]])
+        
+        # Isolation Forest returns -1 for anomaly and 1 for normal
         prediction = model.predict(features)[0]
         if prediction == -1:
-            return 1.0 
-        return 0.0 
+            return 1.0 # anomaly = high risk
+        return 0.0 # normal = low risk
     except Exception as e:
         print(f"Error during AI scoring: {e}")
         return 0.0
@@ -236,7 +254,7 @@ async def log_event(event_input: EventDataInput, request: Request):
 
         result = events.insert_one(event_document)
         
-        # ✅✅ التصحيح: تحويل ObjectId إلى string صراحةً ✅✅
+        # التصحيح: تحويل ObjectId إلى string صراحةً
         event_document['_id'] = str(result.inserted_id)
         
         return EnrichedEventRecord(**event_document)
@@ -270,8 +288,7 @@ async def get_events():
                 if '_id' in event:
                     event['_id'] = str(event['_id'])
                 
-                # محاولة تحويل البيانات إلى النموذج الجديد
-                # إذا نجح التحويل، نضيفه للقائمة
+                # محاولة تحويل البيانات إلى النموذج الجديد (Pydantic Validation)
                 valid_events.append(EnrichedEventRecord(**event))
             except Exception as inner_e:
                 # إذا فشل حدث واحد (بسبب بيانات قديمة)، نطبعه في السجل ونتجاهله
@@ -279,7 +296,7 @@ async def get_events():
                 continue
         
         return valid_events
-    
+        
     except Exception as e:
         print(f"Global error fetching events: {e}")
         return []
