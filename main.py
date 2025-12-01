@@ -90,20 +90,20 @@ async def lifespan(app: FastAPI):
     )
     
     try:
-        # 🌟 الإصلاح الجديد: إزالة tls_version واستخدام ssl_match_hostname=False
+        # 🌟 الإصلاح النهائي: استخدام tlsAllowInvalidHostnames=True لتجاوز تحقق اسم المضيف
         client = AsyncIOMotorClient(
             MONGO_URI, 
             serverSelectionTimeoutMS=5000,
             tls=True, 
             tlsAllowInvalidCertificates=True, 
-            # 🎯 تم حذف tls_version=ssl.PROTOCOL_TLSv1_2
-            ssl_match_hostname=False # 🎯 الإصلاح الحتمي: تجاهل التحقق من اسم المضيف في شهادة SSL
+            # 🎯 البديل الذي يعمل مع إصدارات PyMongo القديمة والحديثة:
+            tlsAllowInvalidHostnames=True 
         )
         
         await client.admin.command('ping') 
         db = client["mini_xdr"]
         events = db["events"]
-        print("✅ MongoDB connection established successfully. (SSL bypass and hostname matching disabled)")
+        print("✅ MongoDB connection established successfully. (Forced SSL bypass using tlsAllowInvalidHostnames)")
     except Exception as e:
         # في حالة الفشل، تأكد من أننا نستخدم URI الصحيح، أو أننا نواجه مشكلة شبكة
         print(f"❌ Failed to connect to MongoDB: {e}")
@@ -154,7 +154,7 @@ def send_alert_email(event_data: dict):
     RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
     
     if not SENDER_EMAIL or not RECEIVER_EMAIL:
-        print("SMTP credentials are not set in Railway. Skipping real email alert simulation.")
+        print("SMTP credentials are set to default or none in Railway. Skipping real email alert simulation.")
         return
 
     time.sleep(1)
