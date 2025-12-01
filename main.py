@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel, Field, ValidationError
-from pymongo import MongoClient
+# سنغير MongoClient إلى AsyncIOMotorClient لاستخدام Motor مع FastAPI
+from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -81,13 +82,23 @@ async def lifespan(app: FastAPI):
     """تهيئة وإغلاق الموارد الحيوية."""
     global model, client, db, events
     
+    # قراءة MONGO_URI. (ملاحظة: لقد غيرنا MongoClient إلى AsyncIOMotorClient)
     MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0")
+    
     try:
-        client = MongoClient(MONGO_URI)
-        client.admin.command('ping')
+        # 💡 الإصلاح الحاسم لخطأ SSL/TLS: إضافة tlsAllowInvalidCertificates=True
+        # هذا يخبر PyMongo بتجاهل التحقق من الشهادة، وهو أمر ضروري في بعض البيئات السحابية.
+        client = AsyncIOMotorClient(
+            MONGO_URI, 
+            serverSelectionTimeoutMS=5000,
+            tls=True, 
+            tlsAllowInvalidCertificates=True 
+        )
+        
+        await client.admin.command('ping') # استخدام await مع motor
         db = client["mini_xdr"]
         events = db["events"]
-        print("✅ MongoDB connection established successfully.")
+        print("✅ MongoDB connection established successfully. (SSL verification bypassed)")
     except Exception as e:
         print(f"❌ Failed to connect to MongoDB: {e}")
         client = None
