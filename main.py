@@ -1,4 +1,4 @@
-gjiwrjg9wrjgtrhoetighepitghetuigetuighutghuoghtuighughuohohpufhqohofrom fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 from pymongo import MongoClient
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,20 +30,6 @@ class EventDataInput(BaseModel):
 # 2. تعريف نموذج الإخراج والتخزين المُثرى (Enriched Storage/Output Model)
 # =================================================================
 class EnrichedEventRecord(EventDataInput):
-    """النموذج الكامل للحدث كما هو مخزن في قاعدة البيانات (بعد الإثراء)."""
-    id: str = Field(alias="_id", description="معرف MongoDB الفريد للحدث.")
-    timestamp: datetime.datetime = Field(default_factory=datetime.datetime.now, description="وقت وقوع الحدث.")
-    risk_score: float = Field(default=0.0, description="درجة الخطر المحسوبة بواسطة الذكاء الاصطناعي (0.0 - 1.0).")
-    event_hash: str = Field(..., description="تجزئة SHA256 للحدث لضمان سلسلة الحراسة.")
-    
-    # حقول إثراء الثغرات الجديدة
-    cve_id: Optional[str] = Field(None, description="معرف الثغرة المرتبط (CVE-ID) بعد عملية الإثراء.")
-    cvss_score: Optional[float] = Field(None, description="درجة الخطورة وفقاً لمعيار CVSS V3.")
-    vulnerability_description: Optional[str] = Field(None, description="وصف موجز للثغرة.")
-
-    class Config:
-        populate_by_name = True
-        json_encoders = {ObjectId: str}
         arbitrary_types_allowed = True
 
 # =================================================================
