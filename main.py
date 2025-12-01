@@ -11,6 +11,7 @@ from typing import List, Any, Optional
 from bson import ObjectId
 from faker import Faker 
 import time
+import ssl # 🌟 جديد: تم استيراد مكتبة SSL
 
 # *********************************
 # إعدادات SOAR و FAKER
@@ -82,24 +83,27 @@ async def lifespan(app: FastAPI):
     """تهيئة وإغلاق الموارد الحيوية."""
     global model, client, db, events
     
-    # 🔴 التعديل الحاسم: تم تضمين معلمات الأمان في URI نفسه.
-    # تم إزالة الوسائط tls=True, tlsAllowInvalidCertificates=True من استدعاء AsyncIOMotorClient.
+    # 🔴 تنظيف URI وإزالة المعلمات منه لنجعلها كـ Python arguments
     MONGO_URI = os.environ.get(
         "MONGO_URI", 
-        "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0&tls=true&tlsAllowInvalidCertificates=true"
+        # تم إزالة: &tls=true&tlsAllowInvalidCertificates=true
+        "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0" 
     )
     
     try:
+        # 🌟 الإصلاح الجديد: فرض استخدام TLS 1.2
         client = AsyncIOMotorClient(
             MONGO_URI, 
             serverSelectionTimeoutMS=5000,
-            # تم إزالة: tls=True, tlsAllowInvalidCertificates=True
+            tls=True, 
+            tlsAllowInvalidCertificates=True, 
+            tls_version=ssl.PROTOCOL_TLSv1_2 # 🎯 فرض استخدام البروتوكول الذي يطلبه MongoDB Atlas
         )
         
         await client.admin.command('ping') 
         db = client["mini_xdr"]
         events = db["events"]
-        print("✅ MongoDB connection established successfully. (SSL verification bypassed by URI parameters)")
+        print("✅ MongoDB connection established successfully. (Forced TLS 1.2 & SSL bypass)")
     except Exception as e:
         # في حالة الفشل، تأكد من أننا نستخدم URI الصحيح، أو أننا نواجه مشكلة شبكة
         print(f"❌ Failed to connect to MongoDB: {e}")
@@ -308,7 +312,7 @@ async def get_events():
                 # إذا نجح التحويل، نضيفه للقائمة
                 valid_events.append(EnrichedEventRecord(**event))
             except Exception as inner_e:
-                # إذا فشل حدث واحد (بسبب بيانات قديمة)، نطبعه في السجل ونتجاهله
+                # إذا فشل حدث واحد (بسبب بيانات قديمة)، نطبقه في السجل ونتجاهله
                 print(f"Skipping invalid event: {inner_e}")
                 continue
         
