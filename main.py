@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel, Field, ValidationError
-# تم تغيير MongoClient إلى AsyncIOMotorClient لاستخدام Motor مع FastAPI
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import MongoClient
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -11,7 +10,6 @@ from typing import List, Any, Optional
 from bson import ObjectId
 from faker import Faker 
 import time
-import ssl # يُترك الاستيراد تحسباً لأي متطلبات أخرى
 
 # *********************************
 # إعدادات SOAR و FAKER
@@ -83,29 +81,14 @@ async def lifespan(app: FastAPI):
     """تهيئة وإغلاق الموارد الحيوية."""
     global model, client, db, events
     
-    # 🔴 تنظيف URI وإزالة المعلمات منه لنجعلها كـ Python arguments
-    MONGO_URI = os.environ.get(
-        "MONGO_URI", 
-        "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0" 
-    )
-    
+    MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0")
     try:
-        # 🌟 الإصلاح النهائي: استخدام tlsAllowInvalidHostnames=True لتجاوز تحقق اسم المضيف
-        client = AsyncIOMotorClient(
-            MONGO_URI, 
-            serverSelectionTimeoutMS=5000,
-            tls=True, 
-            tlsAllowInvalidCertificates=True, 
-            # 🎯 البديل الذي يعمل مع إصدارات PyMongo القديمة والحديثة:
-            tlsAllowInvalidHostnames=True 
-        )
-        
-        await client.admin.command('ping') 
+        client = MongoClient(MONGO_URI)
+        client.admin.command('ping')
         db = client["mini_xdr"]
         events = db["events"]
-        print("✅ MongoDB connection established successfully. (Forced SSL bypass using tlsAllowInvalidHostnames)")
+        print("✅ MongoDB connection established successfully.")
     except Exception as e:
-        # في حالة الفشل، تأكد من أننا نستخدم URI الصحيح، أو أننا نواجه مشكلة شبكة
         print(f"❌ Failed to connect to MongoDB: {e}")
         client = None
         db = None
@@ -154,7 +137,7 @@ def send_alert_email(event_data: dict):
     RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
     
     if not SENDER_EMAIL or not RECEIVER_EMAIL:
-        print("SMTP credentials are set to default or none in Railway. Skipping real email alert simulation.")
+        print("SMTP credentials are not set in Railway. Skipping real email alert simulation.")
         return
 
     time.sleep(1)
@@ -188,12 +171,29 @@ def compute_sha256(data: dict) -> str:
     event_string = json.dumps(data, sort_keys=True, default=str).encode('utf-8')
     return hashlib.sha256(event_string).hexdigest()
 
-def score_event(event_data: dict) -> float:
-    # سيتم نقل Rate Limiting إلى /log
+def check_rate_limiting(ip_address: str, event_type: str, window_seconds: int = 10, max_attempts: int = 5) -> bool:
+    if events is None:
+        return False
 
+    time_threshold = datetime.datetime.now() - datetime.timedelta(seconds=window_seconds)
+    query = {
+        "source_ip": ip_address,
+        "event_type": event_type,
+        "timestamp": {"$gte": time_threshold}
+    }
+    count = events.count_documents(query) + 1 
+    print(f"  [RATE CHECK]: {ip_address} has {count} attempts of '{event_type}' in the last {window_seconds} seconds.")
+    return count >= max_attempts
+
+def score_event(event_data: dict) -> float:
     if event_data['event_type'] in VULN_DB_MOCK.keys() or event_data['event_type'] in ["Unauthorized Access"]:
         print("!! Manual Override: Event type is known critical. Setting risk to 1.0 !!")
         return 1.0
+    
+    if event_data['event_type'] == "Failed_Login_Attempt":
+        if check_rate_limiting(event_data['source_ip'], "Failed_Login_Attempt", window_seconds=10, max_attempts=5):
+            print("!! Manual Override: Brute-Force threshold exceeded. Setting risk to 1.0 !!")
+            return 1.0
         
     if model is None: 
         return 0.0
@@ -221,33 +221,7 @@ async def log_event(event_input: EventDataInput, request: Request):
 
     try:
         event_data_dict = event_input.model_dump()
-        
-        # 1. تطبيق Rate Limiting هنا (async check)
-        window_seconds: int = 10
-        max_attempts: int = 5
-
-        time_threshold = datetime.datetime.now() - datetime.timedelta(seconds=window_seconds)
-        query = {
-            "source_ip": event_input.source_ip,
-            "event_type": event_input.event_type,
-            "timestamp": {"$gte": time_threshold}
-        }
-        # يجب استخدام count_documents كدالة غير متزامنة (مع await)
-        count = await events.count_documents(query) + 1 
-        print(f"  [RATE CHECK]: {event_input.source_ip} has {count} attempts of '{event_input.event_type}' in the last {window_seconds} seconds.")
-        
-        is_brute_force = False
-        if event_input.event_type == "Failed_Login_Attempt" and count >= max_attempts:
-            is_brute_force = True
-        
-        # 2. احتساب المخاطر (Score Event)
         risk_score = score_event(event_data_dict)
-        
-        if is_brute_force and risk_score < 1.0:
-            print("!! Manual Override: Brute-Force threshold exceeded. Setting risk to 1.0 !!")
-            risk_score = 1.0
-
-
         event_hash = compute_sha256(event_data_dict)
         
         event_document = event_data_dict
@@ -260,7 +234,6 @@ async def log_event(event_input: EventDataInput, request: Request):
             "vulnerability_description": None
         })
         
-        # 3. تشغيل الـ SOAR Playbook
         if risk_score == 1.0:
             print(f"\n🔥 CRITICAL ALERT: Risk Score 1.0 for IP {event_input.source_ip}. Initiating SOAR Playbook...")
             context = lookup_vulnerability_context(event_input.event_type)
@@ -271,11 +244,11 @@ async def log_event(event_input: EventDataInput, request: Request):
                     "vulnerability_description": context.get("vulnerability_description")
                 })
             
-            isolate_device(event_input.source_ip)
-            send_alert_email(event_document)
+            isolation_successful = isolate_device(event_input.source_ip)
+            if isolation_successful:
+                send_alert_email(event_document)
 
-        # 4. التخزين في قاعدة البيانات
-        result = await events.insert_one(event_document)
+        result = events.insert_one(event_document)
         
         # ✅✅ التصحيح: تحويل ObjectId إلى string صراحةً ✅✅
         event_document['_id'] = str(result.inserted_id)
@@ -296,8 +269,11 @@ async def get_events():
         
     try:
         # 1. جلب البيانات الخام
-        raw_events_cursor = events.find({}).sort("timestamp", -1).limit(20)
-        raw_events = await raw_events_cursor.to_list(length=20)
+        raw_events = list(
+            events.find({})
+                  .sort("timestamp", -1)
+                  .limit(20)
+        )
         
         valid_events = []
         
@@ -312,7 +288,7 @@ async def get_events():
                 # إذا نجح التحويل، نضيفه للقائمة
                 valid_events.append(EnrichedEventRecord(**event))
             except Exception as inner_e:
-                # إذا فشل حدث واحد (بسبب بيانات قديمة)، نطبقه في السجل ونتجاهله
+                # إذا فشل حدث واحد (بسبب بيانات قديمة)، نطبعه في السجل ونتجاهله
                 print(f"Skipping invalid event: {inner_e}")
                 continue
         
