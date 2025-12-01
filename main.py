@@ -12,9 +12,6 @@ from bson import ObjectId
 from faker import Faker 
 import time
 
-# 🚨 الإضافة الحاسمة: استيراد مكتبة SSL
-import ssl 
-
 # *********************************
 # إعدادات SOAR و FAKER
 # *********************************
@@ -85,24 +82,23 @@ async def lifespan(app: FastAPI):
     """تهيئة وإغلاق الموارد الحيوية."""
     global model, client, db, events
     
-    # قراءة MONGO_URI. (سنعود إلى رابط SRV لضمان أفضل توافق)
+    # قراءة MONGO_URI. 
     MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0")
     
     try:
-        # 💡 الإصلاح النهائي لخطأ SSL/TLS: تمرير ssl_cert_reqs=ssl.CERT_NONE كمعامل PyMongo
+        # 💡 الإصلاح النهائي: إزالة الوسيطة التي سببت خطأ 'Unknown option'.
+        # سنعتمد فقط على tlsAllowInvalidCertificates=True لتجاوز التحقق.
         client = AsyncIOMotorClient(
             MONGO_URI, 
             serverSelectionTimeoutMS=5000,
             tls=True, 
-            tlsAllowInvalidCertificates=True, # لا يزال مفيداً في بعض الحالات
-            # 💡 الوسيطة الحاسمة: استخدام قيمة ssl.CERT_NONE لتعطيل التحقق
-            ssl_cert_reqs=ssl.CERT_NONE 
+            tlsAllowInvalidCertificates=True, 
         )
         
-        await client.admin.command('ping') # استخدام await مع motor
+        await client.admin.command('ping') 
         db = client["mini_xdr"]
         events = db["events"]
-        print("✅ MongoDB connection established successfully. (SSL verification bypassed by CERT_NONE)")
+        print("✅ MongoDB connection established successfully. (SSL verification bypassed by tlsAllowInvalidCertificates)")
     except Exception as e:
         # في حالة الفشل، تأكد من أننا نستخدم URI الصحيح، أو أننا نواجه مشكلة شبكة
         print(f"❌ Failed to connect to MongoDB: {e}")
@@ -186,23 +182,6 @@ def lookup_vulnerability_context(event_type: str) -> dict:
 def compute_sha256(data: dict) -> str:
     event_string = json.dumps(data, sort_keys=True, default=str).encode('utf-8')
     return hashlib.sha256(event_string).hexdigest()
-
-def check_rate_limiting(ip_address: str, event_type: str, window_seconds: int = 10, max_attempts: int = 5) -> bool:
-    if events is None:
-        return False
-
-    time_threshold = datetime.datetime.now() - datetime.timedelta(seconds=window_seconds)
-    query = {
-        "source_ip": ip_address,
-        "event_type": event_type,
-        "timestamp": {"$gte": time_threshold}
-    }
-    # يجب استخدام count_documents كدالة غير متزامنة إذا كنا داخل دالة async
-    # لكن بما أننا نستخدمها في دالة متزامنة (score_event)، يجب أن نتجنبها أو نعتمد على محاكاة
-    # في هذا السيناريو، سنفترض أننا سنستخدمها داخل دالة async لتجنب الحجب
-    # لكننا لا نستطيع استخدام await هنا، لذا يجب أن يكون هذا الجزء من الكود غير دقيق
-    # سنقوم بتغيير هذه الوظيفة لتعمل داخل /log لكي تكون async بشكل صحيح.
-    return False # تعطيل مؤقت لـ Rate Limiting للتسهيل
 
 def score_event(event_data: dict) -> float:
     # سيتم نقل Rate Limiting إلى /log
