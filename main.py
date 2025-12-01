@@ -1,4 +1,4 @@
-kfrom fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 # 🛠️ الإصلاح 1: تم إضافة ConfigDict و StrictFloat للاستخدام الصحيح مع Pydantic V2
 from pydantic import BaseModel, Field, ValidationError, ConfigDict, StrictFloat 
 from pymongo import MongoClient
