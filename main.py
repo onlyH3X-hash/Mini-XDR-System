@@ -82,23 +82,24 @@ async def lifespan(app: FastAPI):
     """تهيئة وإغلاق الموارد الحيوية."""
     global model, client, db, events
     
-    # قراءة MONGO_URI. 
-    MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0")
+    # 🔴 التعديل الحاسم: تم تضمين معلمات الأمان في URI نفسه.
+    # تم إزالة الوسائط tls=True, tlsAllowInvalidCertificates=True من استدعاء AsyncIOMotorClient.
+    MONGO_URI = os.environ.get(
+        "MONGO_URI", 
+        "mongodb+srv://h59146083_db_user:ky0of5mh6hVXglIL@cluster0.jztcrtp.mongodb.net/?appName=Cluster0&tls=true&tlsAllowInvalidCertificates=true"
+    )
     
     try:
-        # 💡 الإصلاح النهائي: إزالة الوسيطة التي سببت خطأ 'Unknown option'.
-        # سنعتمد فقط على tlsAllowInvalidCertificates=True لتجاوز التحقق.
         client = AsyncIOMotorClient(
             MONGO_URI, 
             serverSelectionTimeoutMS=5000,
-            tls=True, 
-            tlsAllowInvalidCertificates=True, 
+            # تم إزالة: tls=True, tlsAllowInvalidCertificates=True
         )
         
         await client.admin.command('ping') 
         db = client["mini_xdr"]
         events = db["events"]
-        print("✅ MongoDB connection established successfully. (SSL verification bypassed by tlsAllowInvalidCertificates)")
+        print("✅ MongoDB connection established successfully. (SSL verification bypassed by URI parameters)")
     except Exception as e:
         # في حالة الفشل، تأكد من أننا نستخدم URI الصحيح، أو أننا نواجه مشكلة شبكة
         print(f"❌ Failed to connect to MongoDB: {e}")
